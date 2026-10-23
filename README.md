@@ -54,6 +54,17 @@ Because the high-energy DC structural component ($X^*$) is preserved in **lossle
 
 ---
 
+## 📥 Download Compressed Model (ACDM Checkpoint)
+
+> [!IMPORTANT]
+> **Model Weights Download Link:**
+> 
+> 🔗 **[CLICK HERE TO DOWNLOAD ACDM MODEL WEIGHTS (PASTE LINK HERE)](<!-- PASTE_YOUR_MODEL_LINK_HERE -->)**
+> 
+> *(Once downloaded, place `anima_turboV11_int4_compressed.safetensors` inside `ComfyUI/models/diffusion_models/`)*
+
+---
+
 ## 🖼️ Visual Comparison & Inference Results
 
 Side-by-side test generations using the exact same prompt and initial seed:
