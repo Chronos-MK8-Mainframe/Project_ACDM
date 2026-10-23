@@ -1,0 +1,19 @@
+# Python & Virtual Environments
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Large model binaries (>100MB cannot be pushed to standard Git)
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+Test_model/*.safetensors
+
+# OS metadata
+.DS_Store
+Thumbs.db
