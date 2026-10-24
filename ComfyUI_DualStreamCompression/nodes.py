@@ -64,7 +64,20 @@ class DualStreamDiTLoader:
         raw_state_dict = load_file(model_path)
         reconstructed_dict = {}
 
-        # 1. Index all phase anchors
+        # 1. Detect if model utilizes ComfyUI's ConvRot / comfy_quant runtime
+        is_convrot_model = any(".comfy_quant" in k for k in raw_state_dict.keys())
+        sample_cq = None
+        if is_convrot_model:
+            for k in raw_state_dict.keys():
+                if k.endswith(".comfy_quant"):
+                    sample_cq = raw_state_dict[k]
+                    break
+            if sample_cq is None:
+                cq_json = '{"format": "int8_tensorwise", "convrot": true, "convrot_groupsize": 256}'
+                sample_cq = torch.tensor(list(cq_json.encode('utf-8')), dtype=torch.uint8)
+            print("[DualStreamCompression] Detected ConvRot quantization metadata. Re-injecting comfy_quant hooks for stock kernels.")
+
+        # 2. Index all phase anchors
         anchors = {}
         for k in list(raw_state_dict.keys()):
             if k.startswith("anchors."):
@@ -72,7 +85,7 @@ class DualStreamDiTLoader:
 
         print(f"[DualStreamCompression] Discovered {len(anchors)} shared anchor bases.")
 
-        # 2. Universal Dynamic Reconstruction
+        # 3. Universal Dynamic Reconstruction
         reconstructed_count = 0
         for k in list(raw_state_dict.keys()):
             if k.startswith("anchors."):
@@ -96,13 +109,12 @@ class DualStreamDiTLoader:
                 # Match anchor dynamically across phases
                 matching = [ak for ak in anchors if ak.endswith(suffix) or ak.endswith(suffix + ".weight")]
                 if len(matching) > 1:
-                    # Multi-phase model: select phase matching layer ID
                     phase_candidates = [ak for ak in matching if ("phase2" in ak and layer_id < 35) or ("phase3" in ak and layer_id >= 20)]
                     anchor_key = phase_candidates[0] if phase_candidates else matching[0]
                 elif len(matching) == 1:
                     anchor_key = matching[0]
                 else:
-                    raise KeyError(f"No matching anchor found for suffix: {suffix} (Available: {list(anchors.keys())[:5]}...)")
+                    raise KeyError(f"No matching anchor found for suffix: {suffix}")
 
                 anchor = anchors[anchor_key]
 
@@ -126,17 +138,29 @@ class DualStreamDiTLoader:
 
                 reconstructed_weight = (anchor.float() + reconstructed_delta).to(anchor.dtype)
                 
-                if precision == "bf16":
-                    reconstructed_weight = reconstructed_weight.to(torch.bfloat16)
-                elif precision == "fp16":
-                    reconstructed_weight = reconstructed_weight.to(torch.float16)
-                elif precision == "fp32":
-                    reconstructed_weight = reconstructed_weight.to(torch.float32)
+                # Check target output format
+                if is_convrot_model and precision == "default":
+                    # Reconstruct into ComfyUI's native INT8 ConvRot layout
+                    # This tells ComfyUI to apply online Hadamard rotation to activations!
+                    row_scale = (torch.max(torch.abs(reconstructed_weight), dim=-1, keepdim=True)[0] + 1e-8) / 127.0
+                    w_i8 = torch.clamp(torch.round(reconstructed_weight / row_scale), -128, 127).to(torch.int8)
 
-                reconstructed_dict[base_weight_key] = reconstructed_weight
+                    reconstructed_dict[f"{base_prefix}.weight"] = w_i8
+                    reconstructed_dict[f"{base_prefix}.weight_scale"] = row_scale.to(torch.float32)
+                    reconstructed_dict[f"{base_prefix}.comfy_quant"] = sample_cq.clone()
+                else:
+                    if precision == "bf16":
+                        reconstructed_weight = reconstructed_weight.to(torch.bfloat16)
+                    elif precision == "fp16":
+                        reconstructed_weight = reconstructed_weight.to(torch.float16)
+                    elif precision == "fp32":
+                        reconstructed_weight = reconstructed_weight.to(torch.float32)
+
+                    reconstructed_dict[base_weight_key] = reconstructed_weight
+
                 reconstructed_count += 1
 
-            # Case B: Legacy INT8 Deltas
+            # Case B: Legacy INT8 Deltas (Anima)
             elif k.endswith(".delta"):
                 base_prefix = k[:-6]
                 base_weight_key = base_prefix + ".weight"
