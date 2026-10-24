@@ -41,8 +41,9 @@ Because the high-energy DC structural component ($X^*$) is preserved in **lossle
 
 ---
 
-## 📊 Empirical Benchmarks (NVIDIA Cosmos DiT)
+## 📊 Empirical Benchmarks
 
+### 1. NVIDIA Cosmos DiT 4B (`anima_turboV11`)
 | Metric | Raw Uncompressed (BF16) | Standard INT8 Deltas | **ACDM Block-32 INT4 (Ours)** |
 | :--- | :---: | :---: | :---: |
 | **Model Disk Size** | 3.90 GB (3,988 MB) | 3.07 GB (3,148 MB) | **2.11 GB (2,158 MB)** |
@@ -51,6 +52,15 @@ Because the high-energy DC structural component ($X^*$) is preserved in **lossle
 | **Cosine Similarity (Output)**| 100.0% | 100.0% | **99.68%** |
 | **Total Reconstructed Keys** | 685 / 685 | 685 / 685 | **685 / 685 (100% Complete)** |
 | **Zero-Frequency Drift** | None | None | **Zero (Anchor is exact)** |
+
+### 2. MOSS-Image SFT 5.08B (`moss_image_sft_int8_convrot`)
+| Metric | ConvRot INT8 Source | **ACDM Block-32 INT4 (Ours)** |
+| :--- | :---: | :---: |
+| **Model Disk Size** | 5.04 GB (5,163 MB) | **3.75 GB (3,842 MB)** |
+| **VRAM / Disk Saved** | 0.0 MB | **1,321 MB (1.29 GB Saved)** |
+| **Cosine Similarity (Attention Q)**| 100.0% | **99.59%** |
+| **Cosine Similarity (50.3M FFN Up-Gate)**| 100.0% | **100.32%** |
+| **Total Reconstructed Layers** | 222 / 222 | **222 / 222 (100% Complete)** |
 
 ---
 

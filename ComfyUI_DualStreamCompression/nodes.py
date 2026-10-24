@@ -1,4 +1,5 @@
 import os
+import re
 import torch
 from safetensors.torch import load_file
 
@@ -12,8 +13,9 @@ except ImportError:
 class DualStreamDiTLoader:
     """
     ComfyUI Custom Node: DualStreamDiTLoader
-    Loads an anchor-compressed DiT model (.safetensors) with Block-32 INT4 / INT8 deltas
-    and reconstructs the weights on-the-fly into a standard ComfyUI MODEL object compatible with KSampler.
+    Universal Loader for Anchor-Compressed DiT models (ACDM).
+    Supports Cosmos DiT (Anima), MOSS-Image (Wan2.1), Flux.1, and SD3.
+    Reconstructs Block-32 INT4 / INT8 deltas on-the-fly into standard ComfyUI MODEL objects.
     """
     @classmethod
     def INPUT_TYPES(s):
@@ -29,6 +31,7 @@ class DualStreamDiTLoader:
                 pass
         if not files:
             files = [
+                "moss_image_sft_acdm_int4.safetensors",
                 "anima_turboV11_int4_compressed.safetensors",
                 "anima_turboV11_compressed.safetensors", 
                 "anima_turboV11.safetensors"
@@ -69,25 +72,38 @@ class DualStreamDiTLoader:
 
         print(f"[DualStreamCompression] Discovered {len(anchors)} shared anchor bases.")
 
-        # 2. Reconstruct all layers
+        # 2. Universal Dynamic Reconstruction
         reconstructed_count = 0
         for k in list(raw_state_dict.keys()):
             if k.startswith("anchors."):
                 continue
 
-            # INT4 Block-32 Packed Deltas
+            # Case A: Block-32 INT4 Packed Deltas
             if k.endswith(".delta_int4"):
                 packed = raw_state_dict[k]
                 base_prefix = k[:-11] # strip '.delta_int4'
                 base_weight_key = base_prefix + ".weight"
                 scale_key = base_prefix + ".scales_b32"
 
-                parts = base_weight_key.split(".")
-                block_id = int(parts[3])
-                suffix = ".".join(parts[4:])
+                # Universal Regex Parser: matches blocks/layers/double_blocks
+                m = re.search(r"(blocks|layers|double_blocks|single_blocks)\.(\d+)\.(.+)", base_prefix)
+                if not m:
+                    raise ValueError(f"Could not parse layer structure from key: {base_prefix}")
+                
+                group_type, layer_num_str, suffix = m.groups()
+                layer_id = int(layer_num_str)
 
-                phase_name = "phase2" if (4 <= block_id <= 19) else "phase3"
-                anchor_key = f"anchors.{phase_name}.{suffix}"
+                # Match anchor dynamically across phases
+                matching = [ak for ak in anchors if ak.endswith(suffix) or ak.endswith(suffix + ".weight")]
+                if len(matching) > 1:
+                    # Multi-phase model: select phase matching layer ID
+                    phase_candidates = [ak for ak in matching if ("phase2" in ak and layer_id < 35) or ("phase3" in ak and layer_id >= 20)]
+                    anchor_key = phase_candidates[0] if phase_candidates else matching[0]
+                elif len(matching) == 1:
+                    anchor_key = matching[0]
+                else:
+                    raise KeyError(f"No matching anchor found for suffix: {suffix} (Available: {list(anchors.keys())[:5]}...)")
+
                 anchor = anchors[anchor_key]
 
                 # Fast vectorized 4-bit unpacking
@@ -98,14 +114,13 @@ class DualStreamDiTLoader:
                 unpacked = torch.stack([high, low], dim=-1).view(m_dim, k_dim)
                 q_delta = unpacked.float() - 8.0 # [-8, 7]
 
-                # Block-32 dequantization
+                # Block-32 scale dequantization
                 if scale_key in raw_state_dict:
                     scales = raw_state_dict[scale_key].float() # [num_blocks]
                     q_blocked = q_delta.view(-1, 32)
                     res_blocked = q_blocked * scales.unsqueeze(-1)
                     reconstructed_delta = res_blocked.view(m_dim, k_dim)
                 else:
-                    # Fallback if per-tensor scale
                     fallback_scale = raw_state_dict[base_prefix + ".scale"].float()
                     reconstructed_delta = q_delta * fallback_scale
 
@@ -121,17 +136,21 @@ class DualStreamDiTLoader:
                 reconstructed_dict[base_weight_key] = reconstructed_weight
                 reconstructed_count += 1
 
-            # INT8 Deltas (legacy compatibility)
+            # Case B: Legacy INT8 Deltas
             elif k.endswith(".delta"):
                 base_prefix = k[:-6]
                 base_weight_key = base_prefix + ".weight"
                 scale_key = base_prefix + ".scale"
 
-                parts = base_weight_key.split(".")
-                suffix = ".".join(parts[4:])
-                anchor_key = f"anchors.phase2.{suffix}"
-                anchor = anchors.get(anchor_key, list(anchors.values())[0])
+                m = re.search(r"(blocks|layers|double_blocks|single_blocks)\.(\d+)\.(.+)", base_prefix)
+                if m:
+                    suffix = m.groups()[2]
+                    matching = [ak for ak in anchors if ak.endswith(suffix) or ak.endswith(suffix + ".weight")]
+                    anchor_key = matching[0] if matching else list(anchors.keys())[0]
+                else:
+                    anchor_key = list(anchors.keys())[0]
 
+                anchor = anchors[anchor_key]
                 delta = raw_state_dict[k].float()
                 scale = raw_state_dict[scale_key].float()
 
@@ -149,7 +168,7 @@ class DualStreamDiTLoader:
             elif k.endswith(".scales_b32") or k.endswith(".scale"):
                 continue
             else:
-                # Direct uncompressed tensor (Phase 1, norms, embeddings, llm_adapter)
+                # Direct uncompressed tensor (Phase 1, norms, embeddings, video modulation)
                 tensor = raw_state_dict[k]
                 if precision == "bf16" and tensor.is_floating_point():
                     tensor = tensor.to(torch.bfloat16)
